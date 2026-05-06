@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>불량 판정 분류기</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.5/dist/teachablemachine-image.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #f4f6f9; color: #222; min-height: 100vh; padding: 2rem; }
+  h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .3rem; color: #1a1a2e; }
+  .subtitle { font-size: .9rem; color: #666; margin-bottom: 1.5rem; }
+  .card { background: #fff; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.2rem; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  .card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: #333; display: flex; align-items: center; gap: 8px; }
+  .step-badge { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; background: #1a1a2e; color: #fff; border-radius: 50%; font-size: .75rem; font-weight: 700; flex-shrink: 0; }
+  #model-status { display: inline-block; font-size: .85rem; padding: 4px 12px; border-radius: 20px; background: #eee; color: #555; }
+  #model-status.ok  { background: #d4edda; color: #155724; }
+  #model-status.err { background: #f8d7da; color: #721c24; }
+  #drop-zone { border: 2px dashed #bbb; border-radius: 10px; padding: 2.5rem 1rem; text-align: center; cursor: pointer; transition: border-color .2s, background .2s; color: #888; font-size: .95rem; }
+  #drop-zone:hover, #drop-zone.drag-over { border-color: #1a1a2e; background: #f0f2ff; color: #1a1a2e; }
+  #drop-zone .icon { font-size: 2.5rem; margin-bottom: .5rem; }
+  button { cursor: pointer; border: none; border-radius: 8px; font-size: .9rem; font-weight: 600; padding: .6rem 1.4rem; transition: opacity .15s, transform .1s; }
+  button:hover  { opacity: .85; }
+  button:active { transform: scale(.97); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-primary { background: #1a1a2e; color: #fff; }
+  .btn-success { background: #28a745; color: #fff; }
+  .btn-outline  { background: transparent; border: 1.5px solid #1a1a2e; color: #1a1a2e; }
+  .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 1rem; }
+  #preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px,1fr)); gap: 8px; margin-top: 1rem; }
+  .preview-item { position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; border: 2px solid transparent; transition: border-color .2s; }
+  .preview-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .preview-label { position: absolute; bottom: 0; left: 0; right: 0; font-size: 10px; font-weight: 700; text-align: center; padding: 3px 2px; background: rgba(0,0,0,.6); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .preview-item.classified { border-color: #28a745; }
+  .preview-item.error-item { border-color: #dc3545; }
+  .progress-wrap { background: #eee; border-radius: 4px; height: 8px; overflow: hidden; margin-top: .8rem; }
+  .progress-bar  { height: 100%; background: #1a1a2e; border-radius: 4px; width: 0%; transition: width .3s; }
+  #progress-text { font-size: .85rem; color: #555; margin-top: .4rem; }
+  #results-section { display: none; }
+  .folder-group { margin-bottom: 1.2rem; }
+  .folder-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: .95rem; font-weight: 600; color: #333; }
+  .count-badge { font-size: .78rem; background: #e8eaf6; color: #3949ab; padding: 2px 9px; border-radius: 10px; font-weight: 700; }
+  .folder-thumbs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .folder-thumb { width: 60px; height: 60px; border-radius: 6px; overflow: hidden; border: 1.5px solid #ddd; }
+  .folder-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px,1fr)); gap: 10px; margin-bottom: 1.2rem; }
+  .summary-card { background: #f4f6f9; border-radius: 8px; padding: 12px; text-align: center; }
+  .summary-card .num { font-size: 1.6rem; font-weight: 700; color: #1a1a2e; }
+  .summary-card .lbl { font-size: .78rem; color: #777; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<h1>🏭 불량 판정 자동 분류기</h1>
+<p class="subtitle">티처블 머신 모델로 이미지를 분석해 클래스별 폴더로 자동 정리합니다</p>
+
+<!-- STEP 1 -->
+<div class="card">
+  <h2><span class="step-badge">1</span> 모델 연결 상태</h2>
+  <span id="model-status">⏳ 모델 불러오는 중...</span>
+  <p id="class-list" style="margin-top:8px; font-size:.85rem; color:#555;"></p>
+</div>
+
+<!-- STEP 2 -->
+<div class="card">
+  <h2><span class="step-badge">2</span> 이미지 업로드</h2>
+  <div id="drop-zone" onclick="document.getElementById('file-input').click()">
+    <div class="icon">📂</div>
+    <div>여기를 클릭하거나 이미지를 드래그해서 놓으세요</div>
+    <div style="font-size:.8rem; margin-top:6px;">JPG, PNG, WEBP — 여러 장 동시 선택 가능</div>
+  </div>
+  <input type="file" id="file-input" accept="image/*" multiple class="hidden" />
+  <div id="preview-grid"></div>
+  <div class="btn-row" id="btn-row" style="display:none">
+    <button class="btn-primary" onclick="classifyAll()" id="classify-btn">🔍 분류 시작</button>
+    <button class="btn-outline" onclick="resetAll()">🗑 초기화</button>
+  </div>
+  <div class="progress-wrap hidden" id="progress-wrap">
+    <div class="progress-bar" id="progress-bar"></div>
+  </div>
+  <p id="progress-text"></p>
+</div>
+
+<!-- STEP 3 -->
+<div class="card" id="results-section">
+  <h2><span class="step-badge">3</span> 분류 결과</h2>
+  <div class="summary-grid" id="summary-grid"></div>
+  <div id="folder-list"></div>
+  <div class="btn-row">
+    <button class="btn-success" onclick="downloadZip()">⬇ ZIP으로 다운로드</button>
+    <button class="btn-outline" onclick="resetAll()">🔄 다시 시작</button>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════
+//  ★ 모델 URL — 여기만 바꾸면 다른 모델 사용 가능
+const MODEL_URL = "https://teachablemachine.withgoogle.com/models/QUeoHCtMN/";
+// ══════════════════════════════════════════
+
+let model, classLabels = [];
+let uploadedFiles = [];   // [{file, url, name}]
+let results = {};         // {className: [{file, url, name}]}
+
+// ── 모델 로드 ───────────────────────────
+async function loadModel() {
+  const statusEl = document.getElementById("model-status");
+  try {
+    model = await tmImage.load(MODEL_URL + "model.json", MODEL_URL + "metadata.json");
+    classLabels = model.getClassLabels();
+    results = {};
+    classLabels.forEach(c => results[c] = []);
+    statusEl.textContent = "✅ 모델 연결 완료";
+    statusEl.className = "ok";
+    document.getElementById("class-list").textContent =
+      "감지 클래스: " + classLabels.join(" / ");
+  } catch(e) {
+    statusEl.textContent = "❌ 모델 로드 실패 — URL을 확인해 주세요";
+    statusEl.className = "err";
+    console.error(e);
+  }
+}
+
+// ── 파일 선택 / 드래그앤드롭 ────────────
+document.getElementById("file-input").addEventListener("change", e => handleFiles(e.target.files));
+
+const dropZone = document.getElementById("drop-zone");
+dropZone.addEventListener("dragover",  e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+dropZone.addEventListener("drop", e => {
+  e.preventDefault();
+  dropZone.classList.remove("drag-over");
+  handleFiles(e.dataTransfer.files);
+});
+
+function handleFiles(files) {
+  if (!files.length) return;
+  const grid = document.getElementById("preview-grid");
+  Array.from(files).forEach(file => {
+    if (!file.type.startsWith("image/")) return;
+    const url = URL.createObjectURL(file);
+    uploadedFiles.push({ file, url, name: file.name });
+    const item = document.createElement("div");
+    item.className = "preview-item";
+    item.id = "prev-" + uploadedFiles.length;
+    item.innerHTML = `<img src="${url}" /><div class="preview-label">대기중</div>`;
+    grid.appendChild(item);
+  });
+  document.getElementById("btn-row").style.display = "flex";
+}
+
+// ── 전체 분류 실행 ───────────────────────
+async function classifyAll() {
+  if (!model) { alert("모델이 아직 로드되지 않았습니다. 잠시 후 다시 시도해 주세요."); return; }
+  if (!uploadedFiles.length) { alert("이미지를 먼저 업로드해 주세요."); return; }
+
+  document.getElementById("classify-btn").disabled = true;
+  document.getElementById("progress-wrap").classList.remove("hidden");
+  classLabels.forEach(c => results[c] = []);
+
+  const total = uploadedFiles.length;
+  for (let i = 0; i < total; i++) {
+    const item = uploadedFiles[i];
+    const itemEl = document.getElementById("prev-" + (i + 1));
+    const labelEl = itemEl ? itemEl.querySelector(".preview-label") : null;
+    if (labelEl) labelEl.textContent = "분석중...";
+
+    try {
+      const img = new Image();
+      img.src = item.url;
+      await new Promise(r => { img.onload = r; });
+      const predictions = await model.predict(img);
+      const top = predictions.reduce((a, b) => a.probability > b.probability ? a : b);
+      const confidence = Math.round(top.probability * 100);
+      results[top.className].push(item);
+      if (itemEl) itemEl.classList.add("classified");
+      if (labelEl) labelEl.textContent = `${top.className} (${confidence}%)`;
+    } catch(e) {
+      if (itemEl) itemEl.classList.add("error-item");
+      if (labelEl) labelEl.textContent = "오류";
+      console.error("분류 실패:", item.name, e);
+    }
+
+    const pct = Math.round(((i + 1) / total) * 100);
+    document.getElementById("progress-bar").style.width = pct + "%";
+    document.getElementById("progress-text").textContent = `진행중 ${i + 1} / ${total} (${pct}%)`;
+  }
+
+  document.getElementById("progress-text").textContent = `✅ 분류 완료! 총 ${total}장`;
+  renderResults();
+}
+
+// ── 결과 렌더링 ──────────────────────────
+function renderResults() {
+  const section = document.getElementById("results-section");
+  const summaryGrid = document.getElementById("summary-grid");
+  const folderList = document.getElementById("folder-list");
+  section.style.display = "block";
+  summaryGrid.innerHTML = "";
+  folderList.innerHTML = "";
+
+  // 요약 카드
+  const totalCard = document.createElement("div");
+  totalCard.className = "summary-card";
+  totalCard.innerHTML = `<div class="num">${uploadedFiles.length}</div><div class="lbl">전체 이미지</div>`;
+  summaryGrid.appendChild(totalCard);
+
+  classLabels.forEach(cls => {
+    const card = document.createElement("div");
+    card.className = "summary-card";
+    card.innerHTML = `<div class="num">${results[cls].length}</div><div class="lbl">${cls}</div>`;
+    summaryGrid.appendChild(card);
+  });
+
+  // 폴더별 썸네일
+  classLabels.forEach(cls => {
+    const items = results[cls];
+    const group = document.createElement("div");
+    group.className = "folder-group";
+    group.innerHTML = `
+      <div class="folder-header">
+        <span>📁</span><span>${cls}</span>
+        <span class="count-badge">${items.length}장</span>
+      </div>
+      <div class="folder-thumbs" id="thumbs-${cls}"></div>`;
+    folderList.appendChild(group);
+
+    const thumbsEl = document.getElementById("thumbs-" + cls);
+    if (!items.length) {
+      thumbsEl.innerHTML = `<span style="font-size:.85rem;color:#aaa;">해당 없음</span>`;
+    } else {
+      items.forEach(item => {
+        const t = document.createElement("div");
+        t.className = "folder-thumb";
+        t.innerHTML = `<img src="${item.url}" title="${item.name}" />`;
+        thumbsEl.appendChild(t);
+      });
+    }
+  });
+
+  section.scrollIntoView({ behavior: "smooth" });
+}
+
+// ── ZIP 다운로드 ─────────────────────────
+async function downloadZip() {
+  const btn = document.querySelector(".btn-success");
+  btn.disabled = true;
+  btn.textContent = "⏳ ZIP 생성 중...";
+
+  const zip = new JSZip();
+  for (const cls of classLabels) {
+    const folder = zip.folder(cls);
+    for (const item of results[cls]) {
+      const response = await fetch(item.url);
+      const blob = await response.blob();
+      folder.file(item.name, blob);
+    }
+  }
+
+  const content = await zip.generateAsync({ type: "blob" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(content);
+  a.download = "분류결과.zip";
+  a.click();
+
+  btn.disabled = false;
+  btn.textContent = "⬇ ZIP으로 다운로드";
+}
+
+// ── 초기화 ───────────────────────────────
+function resetAll() {
+  uploadedFiles = [];
+  classLabels.forEach(c => results[c] = []);
+  document.getElementById("preview-grid").innerHTML = "";
+  document.getElementById("btn-row").style.display = "none";
+  document.getElementById("progress-wrap").classList.add("hidden");
+  document.getElementById("progress-bar").style.width = "0%";
+  document.getElementById("progress-text").textContent = "";
+  document.getElementById("results-section").style.display = "none";
+  document.getElementById("file-input").value = "";
+  document.getElementById("classify-btn").disabled = false;
+}
+
+// ── 앱 시작 ──────────────────────────────
+loadModel();
+</script>
+</body>
+</html>
